@@ -12,6 +12,7 @@ pub struct Client {
     host: Url,
     db: String,
     authentication: Option<(String, String)>,
+    cloud: Option<(String, String)>,
     jwt_token: Option<String>,
     client: HttpClient,
 }
@@ -27,6 +28,7 @@ impl Client {
             db: db.into(),
             authentication: None,
             jwt_token: None,
+            cloud: None,
             client: HttpClient::default(),
         }
     }
@@ -41,6 +43,7 @@ impl Client {
             db: db.into(),
             authentication: None,
             jwt_token: None,
+            cloud: None,
             client,
         }
     }
@@ -59,6 +62,15 @@ impl Client {
         T: Into<String>,
     {
         self.authentication = Some((user.into(), passwd.into()));
+        self
+    }
+
+    /// Set information for hosted InfluxDB
+    pub fn set_cloud_information<T>(mut self, org: T, bucket: T) -> Self
+    where
+        T: Into<String>,
+    {
+        self.cloud = Some((org.into(), bucket.into()));
         self
     }
 
@@ -126,7 +138,7 @@ impl Client {
     ) -> impl Future<Output = Result<(), error::Error>> {
         let line = serialization::line_serialization(points);
 
-        let mut param = vec![("db", self.db.as_str())];
+        let mut param = Vec::new(); //vec![("db", self.db.as_str())];
 
         match precision {
             Some(ref t) => param.push(("precision", t.to_str())),
@@ -138,7 +150,13 @@ impl Client {
         }
 
         let url = self.build_url("write", Some(param));
-        let fut = self.client.post(url).body(line).send();
+        let mut builder = self.client.post(url);
+
+        if let Some(ref token) = self.jwt_token {
+            builder = builder.header("Authorization", &format!("Token {}", token));
+        }
+
+        let fut = builder.body(line).send();
 
         async move {
             let res = fut.await?;
@@ -415,7 +433,7 @@ impl Client {
         };
 
         if let Some(ref token) = self.jwt_token {
-            builder = builder.bearer_auth(token);
+            builder = builder.header("Authorization", &format!("Token {}", token));
         }
 
         let resp_future = builder.send().boxed();
@@ -474,6 +492,11 @@ impl Client {
         if let Some(ref t) = self.authentication {
             authentication.push(("u", &t.0));
             authentication.push(("p", &t.1));
+        }
+
+        if let Some((org, bucket)) = &self.cloud {
+            authentication.push(("org", &org));
+            authentication.push(("bucket", &bucket));
         }
 
         let url = Url::parse_with_params(url.as_str(), authentication).unwrap();
